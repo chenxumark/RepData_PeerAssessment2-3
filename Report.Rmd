@@ -1,0 +1,199 @@
+---
+title: "NOAA Severe Weather Event Analysis (1950 - 2011)"
+date: "16 August 2014"
+output: html_document
+---
+##Synopsis
+The analysis shows the correlation between different types of events and their impact to health of the population. It also shows the economic impact of the various events and highlights the ones with the greatest consequences.
+
+Based on analysis performed Tornados is responsible for the biggest impact to population health. Floods was responsible for the biggest economic impact overall, with droughts having the biggest impact if you any view it in terms of crop damage.
+
+##About the data
+The database contains data from 1950 to Nov 2011. Some data elements might not be compelete in earlier years due to lack of records.
+
+Main data elements beign used in this analysis
+
+Data Column | Description
+----- | ----- 
+EVTYPE |  Type of Events
+FATALITIES | Number of fatalities that occured for that event
+INJURIES | Number of injuries that occured for that event
+PROPDMG | Property damage in USD
+PROPDMGEXP | Propery Damage magnitude (millions, thousands,...). further information in Storm Data Documentation (2.7)
+CROPDMG | Crop damage in USD
+CROPDMGEXP | Crop Damage magnitude (millions, thousands,...).further information in Storm Data Documentation (2.7)
+
+Further Documentation:
+
+[National Weather Service Storm Data Documentation]("https://d396qusza40orc.cloudfront.net/repdata%2Fpeer2_doc%2Fpd01016005curr.pdf")
+
+[National Climatic Data Center Storm Events FAQ]("https://d396qusza40orc.cloudfront.net/repdata%2Fpeer2_doc%2FNCDC%20Storm%20Events-FAQ%20Page.pdf")
+
+##Data Processsing
+load all needed libraries
+opts_chunk$set(echo=TRUE, fig.align='center', message=FALSE, cache = TRUE )
+```{r libs }
+require(plyr)
+require(ggplot2)
+require(reshape2)
+```
+###Load dataset
+load the data from the compressed file and do some basic checks
+```{r loadData,cache=TRUE}
+filename.zip <- "repdata-data-StormData.csv.bz2"
+
+if (!file.exists(filename.zip))
+{
+        file.url <- "https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2"
+        file.download(file.url,file.zip,method="curl")
+}
+data <- read.csv(bzfile(filename.zip))
+```
+Now that the data is loaded we can do some basic checks to ensure data is loaded correctly and is usable in our further analysis.
+
+```{r checkdata}
+dim(data)
+##peek at the top rows of the dataset
+head(data)
+##look at the datatypes 
+sapply(data, class) 
+```
+We are interested in the EVTTYPE column. Lets take a look at the different types of events in the dataset and ensure it is clean.
+```{r checkdataEVTYPE}
+##look at unique event types
+unique(sort(data$EVTYPE))
+##summary(sort(data$EVTYPE))
+
+```
+There are lots of duplicate event types and requires a cleanup. Some issues include spelling errors and plurals of event descriptions. We have chosen a basic approach for now to cleanup the event types but a text mining or non systematic approach can be applied to do further cleanup of the data.
+```{r cleanupEvent }
+data$EVTYPE <- toupper(data$EVTYPE) ##make all uppercase
+data$EVTYPE <- gsub("[\\]", " ", data$EVTYPE)  ##remove / and \ chars
+data$EVTYPE <- gsub("[/]", " ", data$EVTYPE)  ##remove / and \ chars
+data$EVTYPE <- gsub("[-]", " ", data$EVTYPE)  ##remove -
+data$EVTYPE <- gsub("^\\s+|\\s+$", "", data$EVTYPE)  ##remove leading and trailing spaces
+##Some Manual cleanup
+data$EVTYPE <- gsub("TSTM WIND", "THUNDERSTORM WIND", data$EVTYPE)  ##change evtn type
+data$EVTYPE <- gsub("THUNDERSTORM WINDS", "THUNDERSTORM WIND", data$EVTYPE)  ##rhange evtn type
+
+data$EVTYPE <- gsub("HIGH WINDS", "HIGH WIND", data$EVTYPE)  ##change evtn type
+
+```
+Lets check the values for the Population Health. 
+```{r checkdataHealth }
+summary(data$INJURIES)
+summary(data$FATALITIES)
+
+```
+No unexpected values in the FATALITIES or INJURIES data. 
+Lets check the values for the PROPERY and CROP Damage
+```{r checkdataEconomic}
+summary(data$PROPDMG)
+summary(data$CROPDMG)
+##checking and cleanup of exponent part
+unique(data$PROPDMGEXP)
+unique(data$CROPDMGEXP)
+data$PROPDMGEXP <- toupper(data$PROPDMGEXP) 
+data$CROPDMGEXP <- toupper(data$CROPDMGEXP) 
+```
+Lets create a function to apply the different types of exponents to the amounts. Some data Quality Issues exist in the EXP data. Our assumption is that the value are invalid and will not require any adjustments. 
+```{r cleanup}
+##create a function to apply function
+Value.Cleanup <- function(value,exp){
+        ##Assume all except K,M,B,H are invalid
+        if (exp=='H'){ ## Hunderds
+                value * 10^2
+        }  
+        else if (exp=='K'){ ## thousands
+                value * 10^3
+        }
+        else if (exp=='M'){## millions
+                value * 10^6
+        }
+        else if (exp=='B'){## Billions
+                value * 10^9
+        }
+        else {##Assume the rest is bad data Quality
+             value * 10^0   
+        }
+}
+data$PROPDMG.CLEAN <- mapply(Value.Cleanup, data$PROPDMG, data$PROPDMGEXP)
+data$CROPDMG.CLEAN <- mapply(Value.Cleanup, data$CROPDMG, data$CROPDMGEXP)
+data$TOTALDMG <- data$PROPDMG.CLEAN + data$CROPDMG.CLEAN 
+```
+Based on the summary no further cleanup will be required on both the metrics. 
+Further cleanup might need to be one as some values are written in the narrative par
+
+##Results
+Across the United States, which types of events (as indicated in the EVTYPE variable) are most harmful with respect to population health?
+```{r q1}
+data$HEALTH  <-  data$INJURIES + data$FATALITIES
+cols.summary <- c("INJURIES","FATALITIES","HEALTH","PROPDMG.CLEAN","CROPDMG.CLEAN","TOTALDMG")
+data.summary <- ddply(data, .(EVTYPE), colwise(sum, cols.summary))
+
+##lets get all events that is higher then the mean
+data.mean <- mean(data.summary$HEALTH)
+data.summary.plot <- subset(data.summary,HEALTH >= data.mean)
+ggplot(data=data.summary.plot, aes(x=EVTYPE, y=HEALTH), fill="l") + 
+     geom_bar( stat="identity") + 
+        coord_flip() +
+        scale_x_discrete(limits=rev(data.summary.plot$EVTYPE), name="Event") +
+        ylab("No of Injuries and Fatalities") +  
+        ggtitle('Total No of combined Injuries and fatalities (1950-2011)') 
+
+row.mean <- nrow(data.summary.plot)
+```
+There are `r format(row.mean, scientific=FALSE) `   events that is above the mean of the health metric (injuries + fatalities).
+
+Based on plot most harmful events are Tornados and Excessive heat.
+Lets compare the fatalities vs injuries and check if we can determine which event is the most harmful to the health of th population
+```{r q1_plot2}
+##Melt data frame to get a draw a bar graph with the comparisions
+data.summary.plot.melt <- melt(data.summary.plot[,c("EVTYPE","INJURIES","FATALITIES")], id="EVTYPE")
+
+qplot(factor(EVTYPE),
+      data=data.summary.plot.melt ,
+      geom="bar",
+      fill=variable,
+      weight=value,
+      position='dodge'
+      ) +
+        coord_flip() +
+        scale_size_area() + 
+        ylab("Injuries vs Fatalities") + 
+        xlab("Event") +  
+        ggtitle('No of injuries vs fatalities of top storm events (1950-2011)')
+
+
+```
+
+Most of the injuries and fatalities occured with a tornado event. 
+Across the United States, which types of events have the greatest economic consequences?
+Lets compare the top 10 event that caused the most damage (total of crop and property). 
+```{r q2}
+##Get top 10 of each Health metric
+data.summary.plot.econ <- head(data.summary[order(data.summary$TOTALDMG, decreasing=TRUE), ], 10)
+data.summary.plot.econ$TOTALDMG <- data.summary.plot.econ$TOTALDMG / 10^9
+##Do Plot
+
+qplot(factor(EVTYPE),
+      data=data.summary.plot.econ,
+      geom="bar",
+      fill=TOTALDMG,
+      weight=TOTALDMG,
+      ) +
+        coord_flip() +
+        scale_size_area() + 
+        ylab("Total Property + Crop Damage ($ billion)") + 
+        xlab("Event") +  
+        ggtitle('Top 10 events that caused most damage in USD ($ billion) (1950-2011)')
+
+##Data
+
+```
+The data table of the economic consequences and that is depicted in the bar graph above in billions USD
+```{r dataTable} 
+data.summary.plot.econ$PROPERTY_DAMAGE<- data.summary.plot.econ$PROPDMG.CLEAN / 10^9
+data.summary.plot.econ$CROP_DAMAGE <- data.summary.plot.econ$CROPDMG.CLEAN / 10^9
+data.summary.plot.econ[,c("EVTYPE","PROPERTY_DAMAGE","CROP_DAMAGE")]
+```
